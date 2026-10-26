@@ -2,6 +2,8 @@ package com.thymus.tgwsproxy.core
 
 import android.os.SystemClock
 import android.util.Log
+import com.thymus.tgwsproxy.bypass.BypassStrategy
+import com.thymus.tgwsproxy.bypass.SplitPosition
 import java.io.OutputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -19,10 +21,10 @@ internal fun interface TunSink {
  *
  * The device believes it talks to the real server; in fact it talks to this class, which
  * keeps a second, ordinary socket to the server. Because we own the device-side TCP
- * stream, the first TLS ClientHello is rewritten into two TLS records with the cut in
- * the middle of the SNI hostname. That defeats filters that inspect a single packet or a
- * single record; a DPI that reassembles handshake messages across records still sees the
- * name, and without root there is no way to reorder or fake packets.
+ * stream, the first TLS ClientHello is rewritten into one or more TLS records with cuts
+ * inside the SNI hostname. That defeats filters that inspect a single packet or a single
+ * record; a DPI that reassembles handshake messages across records still sees the name,
+ * and without root there is no way to reorder or fake packets.
  *
  * Device payload is queued and written by a dedicated writer task, never on the thread
  * that reads the TUN device: one slow server must not stall every other connection.
@@ -30,7 +32,7 @@ internal fun interface TunSink {
 internal class TcpRelay(
     private val tun: TunSink,
     first: Packets.Ip,
-    private val desync: Boolean,
+    private val strategy: BypassStrategy,
     private val onClosed: (TcpRelay) -> Unit,
     private val clock: () -> Long = { SystemClock.elapsedRealtime() },
 ) {
@@ -56,7 +58,6 @@ internal class TcpRelay(
     private var serverSeq = Random.nextInt().toLong() and MASK
     private var acked = serverSeq
     private var window = first.window.coerceIn(2048, 65535)
-    private var desynced = false
     private var finQueued = false
 
     /** Downstream segments the device has not acknowledged yet, newest last. */
@@ -177,10 +178,16 @@ internal class TcpRelay(
                     break
                 }
                 var finAfter = false
-                if (first && desync && isTlsHandshake(chunk.data)) {
-                    desynced = true
+                if (first && strategy.active && strategy.appliesToPort(serverPort) &&
+                    isTlsHandshake(chunk.data)
+                ) {
                     val hello = gatherClientHello(chunk)
-                    writeDesync(out, hello.data)
+                    if (strategy.appliesToHost(sniHost(hello.data))) {
+                        writeDesync(out, hello.data)
+                    } else {
+                        out.write(hello.data)
+                        out.flush()
+                    }
                     finAfter = hello.fin
                     synchronized(lock) {
                         clientSeq = (clientSeq + hello.data.size) and MASK
@@ -372,47 +379,84 @@ internal class TcpRelay(
     }
 
     /**
-     * Reframes the ClientHello into two TLS records with the cut inside the SNI name.
-     *
-     * A plain TCP split only hides the name from a DPI that inspects single packets.
-     * Two records also hide it from a per-record scanner, because neither record holds
-     * the whole name. A DPI that reassembles the handshake across records is not fooled;
-     * that limitation cannot be fixed from a userspace socket.
+     * Reframes the ClientHello into one or more TLS records according to the selected
+     * strategy. A cut inside the blocked word hides it from per-fragment matching; the
+     * out-of-band byte between records breaks reassembly, like zapret's `oob` + `midsld`.
      */
     private fun writeDesync(out: OutputStream, data: ByteArray) {
-        val cut = sniCut(data)
         val recordLength = if (data.size >= 5) u16(data, 3) else 0
-        val firstLength = if (cut == null) 0 else cut - 5
-        val reframe = firstLength in 1 until recordLength && data.size >= 5 + recordLength
+        if (recordLength <= 1 || data.size < 5 + recordLength) {
+            out.write(data)
+            out.flush()
+            return
+        }
+        val host = sniRange(data)
+        val cuts = strategy.splitPositions
+            .mapNotNull { resolveCut(it, data, host, recordLength) }
+            .filter { it in 1 until recordLength }
+            .distinct()
+            .sorted()
 
-        if (reframe) {
-            val first = tlsRecord(data, 0, firstLength)
-            val second = tlsRecord(data, firstLength, recordLength - firstLength)
-            out.write(first)
+        if (cuts.isEmpty()) {
+            out.write(data)
             out.flush()
-            // zapret's oob trick: one urgent byte between the records. The server's TCP
-            // stack removes it from the normal stream, but a DPI that reads the payload
-            // literally sees a stray byte inside the handshake and loses the SNI.
-            runCatching { socket.sendUrgentData(0) }
-            runCatching { Thread.sleep(SPLIT_DELAY_MS) }
-            out.write(second)
-            out.flush()
-            val tail = 5 + recordLength
-            if (data.size > tail) {
-                out.write(data, tail, data.size - tail)
-                out.flush()
-            }
-            Log.d(TAG, "ClientHello ${data.size}B: two TLS records + OOB, cut at $cut")
             return
         }
 
-        val at = if (cut != null && cut in 1 until data.size) cut else 1
-        out.write(data, 0, at)
+        var start = 0
+        for (cut in cuts) {
+            writeRecord(out, data, start, cut - start)
+            if (strategy.oob) {
+                // The server's TCP stack drops urgent bytes, but a DPI that reads the
+                // payload literally sees a stray byte and loses the handshake.
+                repeat(strategy.oobRepeats) { runCatching { socket.sendUrgentData(0) } }
+            }
+            runCatching { Thread.sleep(SPLIT_DELAY_MS) }
+            start = cut
+        }
+        writeRecord(out, data, start, recordLength - start)
+
+        val tail = 5 + recordLength
+        if (data.size > tail) {
+            out.write(data, tail, data.size - tail)
+            out.flush()
+        }
+        Log.d(
+            TAG,
+            "ClientHello ${data.size}B: ${cuts.size + 1} TLS records" +
+                (if (strategy.oob) " + OOB" else "") + ", cuts $cuts",
+        )
+    }
+
+    private fun writeRecord(out: OutputStream, data: ByteArray, bodyOffset: Int, length: Int) {
+        out.write(tlsRecord(data, bodyOffset, length))
         out.flush()
-        runCatching { Thread.sleep(SPLIT_DELAY_MS) }
-        out.write(data, at, data.size - at)
-        out.flush()
-        Log.d(TAG, "ClientHello ${data.size}B: TCP split at $at")
+    }
+
+    /** Resolves a strategy position into a body offset inside the first TLS record. */
+    private fun resolveCut(
+        position: SplitPosition,
+        data: ByteArray,
+        host: IntRange?,
+        recordLength: Int,
+    ): Int {
+        val absolute = when (position) {
+            SplitPosition.Keyword -> host?.let { keywordCut(data, it) }
+            SplitPosition.Middle -> host?.let { it.first + (it.last - it.first + 1) / 2 }
+            SplitPosition.HostStart -> host?.first
+            is SplitPosition.Offset -> 5 + position.bytes
+        } ?: (5 + recordLength / 2)
+        return (absolute - 5).coerceIn(1, recordLength - 1)
+    }
+
+    /** Cuts inside the word the filter looks for, or in the middle of the hostname. */
+    private fun keywordCut(data: ByteArray, host: IntRange): Int {
+        val end = host.last + 1
+        for (token in SENSITIVE_TOKENS) {
+            val at = indexOfIgnoreCase(data, host.first, end, token)
+            if (at >= 0) return at + token.length / 2
+        }
+        return host.first + (host.last - host.first + 1) / 2
     }
 
     /** Copy of the first record's header with a new length and a slice of its body. */
@@ -427,8 +471,8 @@ internal class TcpRelay(
         return record
     }
 
-    /** Offset inside the SNI name where the handshake can be cut, or null when unknown. */
-    private fun sniCut(data: ByteArray): Int? {
+    /** Byte range of the SNI hostname inside the ClientHello, or null when it cannot be parsed. */
+    private fun sniRange(data: ByteArray): IntRange? {
         return try {
             if (data.size < 9 || data[0] != 0x16.toByte() || data[5] != 0x01.toByte()) {
                 null
@@ -451,16 +495,7 @@ internal class TcpRelay(
                         val nameLength = u16(data, body + 3)
                         val nameStart = body + 5
                         if (nameLength > 2 && nameStart + nameLength <= end) {
-                            // Cut inside the sensitive word itself (zapret's midsld idea):
-                            // "youtubei.googleapis.com" becomes "yout" + "ubei.googleapis.com",
-                            // so neither record contains a keyword a DPI can match. Cutting in
-                            // the middle of the whole name would leave "youtubei.goog" intact.
-                            val nameEnd = nameStart + nameLength
-                            for (token in SENSITIVE_TOKENS) {
-                                val at = indexOfIgnoreCase(data, nameStart, nameEnd, token)
-                                if (at >= 0) return at + token.length / 2
-                            }
-                            return nameStart + nameLength / 2
+                            return nameStart until (nameStart + nameLength)
                         }
                         return null
                     }
@@ -471,6 +506,10 @@ internal class TcpRelay(
         } catch (_: Throwable) {
             null
         }
+    }
+
+    private fun sniHost(data: ByteArray): String? = sniRange(data)?.let { range ->
+        String(data, range.first, range.last - range.first + 1, Charsets.US_ASCII)
     }
 
     private fun isTlsHandshake(payload: ByteArray): Boolean =

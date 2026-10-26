@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.net.VpnService
 import android.os.PowerManager
+import android.provider.OpenableColumns
 import android.provider.Settings as AndroidSettings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -55,6 +56,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.thymus.tgwsproxy.R
+import com.thymus.tgwsproxy.bypass.BypassConfigs
+import com.thymus.tgwsproxy.bypass.BypassPresets
 import com.thymus.tgwsproxy.core.DcInfo
 import com.thymus.tgwsproxy.core.ProxyConfig
 import com.thymus.tgwsproxy.core.ProxyDiagnostics
@@ -66,6 +69,7 @@ import com.thymus.tgwsproxy.state.ProxyLog
 import com.thymus.tgwsproxy.state.ProxyState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 @Composable
@@ -98,7 +102,29 @@ fun HomeScreen() {
 
     val bypassRunning by BypassState.running.collectAsStateWithLifecycle()
     var bypassEnabled by remember { mutableStateOf(Settings.isBypassEnabled(context)) }
-    var bypassDesync by remember { mutableStateOf(Settings.isBypassDesync(context)) }
+    var bypassConfigs by remember { mutableStateOf(BypassConfigs.all(context)) }
+    var bypassConfigId by remember { mutableStateOf(Settings.bypassConfigId(context)) }
+
+    fun refreshConfigs() {
+        bypassConfigs = BypassConfigs.all(context)
+    }
+
+    fun selectConfig(id: String, notify: Boolean = true) {
+        Settings.setBypassConfigId(context, id)
+        bypassConfigId = id
+        // Existing connections keep their strategy; only new ones use the new config.
+        if (bypassEnabled) BypassService.reload(context)
+        if (!notify) return
+        val name = bypassConfigs.firstOrNull { it.id == id }?.name ?: id
+        scope.launch { snackbar.showSnackbar(context.getString(R.string.bypass_config_applied, name)) }
+    }
+
+    fun deleteConfig(id: String) {
+        if (!BypassConfigs.delete(context, id)) return
+        refreshConfigs()
+        if (bypassConfigId == id) selectConfig(BypassPresets.DEFAULT_ID, notify = false)
+        scope.launch { snackbar.showSnackbar(context.getString(R.string.bypass_config_deleted)) }
+    }
 
     val bypassPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -111,6 +137,34 @@ fun HomeScreen() {
             Settings.setBypassEnabled(context, false)
             bypassEnabled = false
             scope.launch { snackbar.showSnackbar(context.getString(R.string.bypass_permission_denied)) }
+        }
+    }
+
+    val importConfig = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val text = readConfig(context, uri)
+                    val name = displayName(context, uri) ?: "config.conf"
+                    BypassConfigs.import(context, text, name)
+                }.getOrElse { BypassConfigs.ImportResult.Error(it.message ?: "read error") }
+            }
+            when (result) {
+                is BypassConfigs.ImportResult.Success -> {
+                    refreshConfigs()
+                    selectConfig(result.profile.id, notify = false)
+                    snackbar.showSnackbar(
+                        context.getString(R.string.bypass_config_imported, result.profile.name),
+                    )
+                }
+                is BypassConfigs.ImportResult.Error ->
+                    snackbar.showSnackbar(
+                        context.getString(R.string.bypass_config_import_failed, result.message),
+                    )
+            }
         }
     }
 
@@ -230,14 +284,12 @@ fun HomeScreen() {
                     onThemeChange = { applyTheme(context, it) },
                     bypassEnabled = bypassEnabled,
                     bypassRunning = bypassRunning,
-                    bypassDesync = bypassDesync,
+                    bypassConfigs = bypassConfigs,
+                    bypassConfigId = bypassConfigId,
                     onBypassChange = { setBypass(it) },
-                    onBypassDesyncChange = {
-                        bypassDesync = it
-                        Settings.setBypassDesync(context, it)
-                        // New connections pick the setting up right away.
-                        if (bypassEnabled) BypassService.start(context)
-                    },
+                    onBypassConfigSelect = { selectConfig(it) },
+                    onBypassConfigDelete = { deleteConfig(it) },
+                    onBypassConfigImport = { importConfig.launch(arrayOf("*/*")) },
                     port = portText,
                     onPortChange = { portText = it },
                     secret = secretText,
@@ -621,7 +673,8 @@ private fun TrafficValue(arrow: String, value: String, modifier: Modifier) {
 }
 
 @Composable
-internal fun stringResourceSafe(id: Int): String = androidx.compose.ui.res.stringResource(id)
+internal fun stringResourceSafe(id: Int, vararg args: Any): String =
+    androidx.compose.ui.res.stringResource(id, *args)
 
 internal fun proxyLink(port: Int, secretHex: String): String =
     "tg://proxy?server=127.0.0.1&port=$port&secret=dd$secretHex"
@@ -666,6 +719,30 @@ private val TELEGRAM_PACKAGES = listOf(
     "org.telegram.plus",
     "org.thunderdog.challegram",
 )
+
+/** Human-readable file name of a content:// URI picked in the import dialog. */
+private fun displayName(context: Context, uri: Uri): String? = runCatching {
+    context.contentResolver
+        .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+        ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+}.getOrNull()
+
+/** Reads an imported config with a hard cap, so picking a huge file cannot exhaust memory. */
+private fun readConfig(context: Context, uri: Uri): String {
+    val limit = 512 * 1024
+    val input = context.contentResolver.openInputStream(uri) ?: error("empty file")
+    return input.use { stream ->
+        val out = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        while (true) {
+            val read = stream.read(buffer)
+            if (read < 0) break
+            if (out.size() + read > limit) error("file is too large")
+            out.write(buffer, 0, read)
+        }
+        out.toByteArray().toString(Charsets.UTF_8)
+    }
+}
 
 internal fun isBatteryOptimizationIgnored(context: Context): Boolean {
     val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager

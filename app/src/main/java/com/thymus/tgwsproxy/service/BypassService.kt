@@ -16,6 +16,9 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.thymus.tgwsproxy.MainActivity
 import com.thymus.tgwsproxy.R
+import com.thymus.tgwsproxy.bypass.BypassConfigs
+import com.thymus.tgwsproxy.bypass.BypassProfile
+import com.thymus.tgwsproxy.bypass.BypassStrategy
 import com.thymus.tgwsproxy.core.Packets
 import com.thymus.tgwsproxy.core.TcpRelay
 import com.thymus.tgwsproxy.core.TunSink
@@ -48,6 +51,7 @@ class BypassService : VpnService() {
         private const val NOTIFICATION_ID = 1444
         const val ACTION_START = "com.thymus.tgwsproxy.action.BYPASS_START"
         const val ACTION_STOP = "com.thymus.tgwsproxy.action.BYPASS_STOP"
+        const val ACTION_RELOAD = "com.thymus.tgwsproxy.action.BYPASS_RELOAD"
         private const val IDLE_TIMEOUT_MS = 120_000L
         private const val UDP_TIMEOUT_MS = 60_000
         private const val TELEGRAM_PACKAGE = "org.telegram.messenger"
@@ -75,6 +79,16 @@ class BypassService : VpnService() {
                 context.stopService(Intent(context, BypassService::class.java))
             }
         }
+
+        /**
+         * Applies a newly selected config to connections opened from now on. Existing
+         * flows keep the strategy they started with, so a switch never breaks a live
+         * download.
+         */
+        fun reload(context: Context) {
+            val intent = Intent(context, BypassService::class.java).setAction(ACTION_RELOAD)
+            runCatching { context.startService(intent) }
+        }
     }
 
     private val flows = ConcurrentHashMap<String, TcpRelay>()
@@ -88,7 +102,22 @@ class BypassService : VpnService() {
 
     @Volatile private var running = false
     private var reader: Thread? = null
-    private var desync = true
+
+    @Volatile private var profile: BypassProfile = BypassProfile(
+        id = "general",
+        name = "General",
+        description = "",
+        splitPositions = listOf("midsld"),
+        oob = true,
+    )
+
+    /** Snapshot for new connections; [applyProfile] swaps both fields together. */
+    @Volatile private var strategy: BypassStrategy = profile.toStrategy()
+
+    private fun applyProfile(value: BypassProfile) {
+        profile = value
+        strategy = value.toStrategy()
+    }
 
     private val janitor = object : Runnable {
         override fun run() {
@@ -123,7 +152,12 @@ class BypassService : VpnService() {
             stopSelf()
             return START_NOT_STICKY
         }
-        desync = Settings.isBypassDesync(this)
+        val loaded = BypassConfigs.selected(this)
+        applyProfile(loaded)
+        if (intent?.action == ACTION_RELOAD && running) {
+            Log.d(TAG, "config reload: ${loaded.name} (${loaded.splitPositions}, oob=${loaded.oob})")
+            return START_STICKY
+        }
         if (!running) startTunnel()
         return START_STICKY
     }
@@ -175,7 +209,8 @@ class BypassService : VpnService() {
 
         tunnel = fd
         output = FileOutputStream(fd.fileDescriptor)
-        desync = Settings.isBypassDesync(this)
+        applyProfile(BypassConfigs.selected(this))
+        Log.d(TAG, "config: ${profile.name} (${profile.splitPositions}, oob=${profile.oob})")
         running = true
         startForeground(NOTIFICATION_ID, buildNotification())
         BypassState.running.value = true
@@ -229,7 +264,7 @@ class BypassService : VpnService() {
             val relay = TcpRelay(
                 tun = TunSink { writePacket(it) },
                 first = packet,
-                desync = desync,
+                strategy = strategy,
                 onClosed = { closed -> flows.remove(closed.key, closed) },
             )
             relay.key = key
@@ -268,6 +303,9 @@ class BypassService : VpnService() {
      * drops the handshake outright.
      */
     private fun handleUdp(packet: Packets.Ip) {
+        // A config can ask to drop QUIC so clients fall back to TCP, where the split is
+        // applied. The default relays it, which is what this provider's filter needs.
+        if (packet.dstPort == 443 && !strategy.quicRelay) return
         val key = keyOf(packet)
         val existing = udpFlows[key]
         if (existing != null) {

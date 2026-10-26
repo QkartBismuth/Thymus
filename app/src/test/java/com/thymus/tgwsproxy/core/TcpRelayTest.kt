@@ -1,5 +1,7 @@
 package com.thymus.tgwsproxy.core
 
+import com.thymus.tgwsproxy.bypass.BypassStrategy
+import com.thymus.tgwsproxy.bypass.SplitPosition
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -149,6 +151,79 @@ class TcpRelayTest {
     }
 
     @Test
+    fun multisplitProducesOneRecordPerCut() {
+        val relay = relay(
+            BypassStrategy(
+                splitPositions = listOf(SplitPosition.Offset(1), SplitPosition.Keyword),
+                oob = false,
+                ports = setOf(serverPort),
+            ),
+        )
+        relay.start(executor)
+        val upstream = server.accept()
+        upstream.soTimeout = 3000
+        val synAck = await { p -> p.flags and Packets.TCP_SYN != 0 }
+
+        val hello = clientHello("youtubei.googleapis.com")
+        relay.onPacket(
+            packet(
+                seq = clientIsn + 1,
+                ack = synAck.seq + 1,
+                flags = Packets.TCP_ACK or Packets.TCP_PSH,
+                payload = hello,
+            ),
+        )
+
+        val input = upstream.getInputStream()
+        val records = List(3) { readRecord(input) }
+        records.forEach { assertEquals(0x16, it[0].toInt() and 0xFF) }
+        records.forEach {
+            assertFalse(
+                "a fragment still contains the blocked word",
+                String(it, Charsets.ISO_8859_1).contains("youtube"),
+            )
+        }
+        val body = records.fold(ByteArray(0)) { acc, record ->
+            val length = ((record[3].toInt() and 0xFF) shl 8) or (record[4].toInt() and 0xFF)
+            acc + record.copyOfRange(5, 5 + length)
+        }
+        assertArrayEquals(hello.copyOfRange(5, hello.size), body)
+        relay.close()
+        runCatching { upstream.close() }
+    }
+
+    @Test
+    fun leavesHostsOutsideTheConfigUntouched() {
+        val relay = relay(
+            BypassStrategy(
+                splitPositions = listOf(SplitPosition.Keyword),
+                oob = true,
+                ports = setOf(serverPort),
+                hosts = listOf("youtube.com"),
+            ),
+        )
+        relay.start(executor)
+        val upstream = server.accept()
+        upstream.soTimeout = 3000
+        val synAck = await { p -> p.flags and Packets.TCP_SYN != 0 }
+
+        val hello = clientHello("rutracker.org")
+        relay.onPacket(
+            packet(
+                seq = clientIsn + 1,
+                ack = synAck.seq + 1,
+                flags = Packets.TCP_ACK or Packets.TCP_PSH,
+                payload = hello,
+            ),
+        )
+
+        val record = readRecord(upstream.getInputStream())
+        assertArrayEquals("a host outside the config must not be split", hello, record)
+        relay.close()
+        runCatching { upstream.close() }
+    }
+
+    @Test
     fun retransmittedSegmentIsAcknowledgedWithoutDuplicatingData() {
         val relay = relay(desync = false)
         relay.start(executor)
@@ -193,7 +268,7 @@ class TcpRelayTest {
                 clientIp, serverIp, Packets.PROTO_TCP, 64,
                 clientPort, serverPort, clientIsn, 0, Packets.TCP_SYN, 65535, Packets.EMPTY,
             ),
-            desync = false,
+            strategy = BypassStrategy(),
             onClosed = {},
             clock = { now },
         )
@@ -226,7 +301,7 @@ class TcpRelayTest {
                 clientIp, serverIp, Packets.PROTO_TCP, 64,
                 clientPort, deadPort, clientIsn, 0, Packets.TCP_SYN, 65535, Packets.EMPTY,
             ),
-            desync = false,
+            strategy = BypassStrategy(),
             onClosed = {},
         )
         relay.start(executor)
@@ -235,13 +310,25 @@ class TcpRelayTest {
         assertTrue(relay.isClosed)
     }
 
-    private fun relay(desync: Boolean) = TcpRelay(
+    private fun relay(desync: Boolean) = relay(
+        if (desync) {
+            BypassStrategy(
+                splitPositions = listOf(SplitPosition.Keyword),
+                oob = true,
+                ports = setOf(serverPort),
+            )
+        } else {
+            BypassStrategy()
+        },
+    )
+
+    private fun relay(strategy: BypassStrategy) = TcpRelay(
         tun = TunSink { packets.add(it) },
         first = Packets.Ip(
             clientIp, serverIp, Packets.PROTO_TCP, 64,
             clientPort, serverPort, clientIsn, 0, Packets.TCP_SYN, 65535, Packets.EMPTY,
         ),
-        desync = desync,
+        strategy = strategy,
         onClosed = {},
     )
 

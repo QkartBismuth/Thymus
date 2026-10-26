@@ -1,6 +1,7 @@
 package com.thymus.tgwsproxy.data
 
 import android.content.Context
+import com.thymus.tgwsproxy.bypass.BypassPresets
 import com.thymus.tgwsproxy.core.DcInfo
 import com.thymus.tgwsproxy.core.ProxyConfig
 import com.thymus.tgwsproxy.core.randomBytes
@@ -20,6 +21,7 @@ object Settings {
     private const val KEY_BATTERY_PROMPT = "battery_prompt_shown"
     private const val KEY_BYPASS_ENABLED = "bypass_enabled"
     private const val KEY_BYPASS_DESYNC = "bypass_desync"
+    private const val KEY_BYPASS_CONFIG = "bypass_config"
 
     fun secret(context: Context): String {
         val prefs = prefs(context)
@@ -101,11 +103,19 @@ object Settings {
         prefs(context).edit().putBoolean(KEY_BYPASS_ENABLED, value).apply()
     }
 
-    /** Split the TLS ClientHello before sending it upstream. */
-    fun isBypassDesync(context: Context): Boolean = prefs(context).getBoolean(KEY_BYPASS_DESYNC, true)
+    /** Selected bypass config; falls back to the old desync switch for existing installs. */
+    fun bypassConfigId(context: Context): String {
+        val prefs = prefs(context)
+        prefs.getString(KEY_BYPASS_CONFIG, null)?.let { return it }
+        return if (prefs.getBoolean(KEY_BYPASS_DESYNC, true)) {
+            BypassPresets.DEFAULT_ID
+        } else {
+            "passthrough"
+        }
+    }
 
-    fun setBypassDesync(context: Context, value: Boolean) {
-        prefs(context).edit().putBoolean(KEY_BYPASS_DESYNC, value).apply()
+    fun setBypassConfigId(context: Context, id: String) {
+        prefs(context).edit().putString(KEY_BYPASS_CONFIG, id).apply()
     }
 
     private fun prefs(context: Context) =

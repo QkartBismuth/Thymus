@@ -9,13 +9,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -44,6 +47,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.thymus.tgwsproxy.R
+import com.thymus.tgwsproxy.bypass.BypassProfile
 
 /**
  * Full-screen settings: proxy credentials, routing, connection details and system
@@ -57,9 +61,12 @@ fun SettingsScreen(
     onThemeChange: (Boolean) -> Unit,
     bypassEnabled: Boolean,
     bypassRunning: Boolean,
-    bypassDesync: Boolean,
+    bypassConfigs: List<BypassProfile>,
+    bypassConfigId: String,
     onBypassChange: (Boolean) -> Unit,
-    onBypassDesyncChange: (Boolean) -> Unit,
+    onBypassConfigSelect: (String) -> Unit,
+    onBypassConfigDelete: (String) -> Unit,
+    onBypassConfigImport: () -> Unit,
     port: String,
     onPortChange: (String) -> Unit,
     secret: String,
@@ -86,6 +93,9 @@ fun SettingsScreen(
     onBack: () -> Unit,
 ) {
     var logExpanded by rememberSaveable { mutableStateOf(false) }
+    var showConfigPicker by rememberSaveable { mutableStateOf(false) }
+    val selectedConfig = bypassConfigs.firstOrNull { it.id == bypassConfigId }
+        ?: bypassConfigs.firstOrNull()
 
     LazyColumn(
         modifier = modifier,
@@ -372,20 +382,84 @@ fun SettingsScreen(
                     lineHeight = 16.sp,
                     color = Palette.PineMuted,
                 )
-                if (bypassEnabled) {
-                    Spacer(Modifier.height(6.dp))
-                    ToggleRow(
-                        title = stringResourceSafe(R.string.bypass_desync),
-                        checked = bypassDesync,
-                        onChange = onBypassDesyncChange,
-                    )
+                Spacer(Modifier.height(10.dp))
+                HorizontalDivider(color = Palette.OutlineSoft)
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    text = stringResourceSafe(R.string.bypass_config),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Palette.Ink,
+                )
+                Spacer(Modifier.height(6.dp))
+                if (selectedConfig != null) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(Palette.LavenderLight)
+                            .clickable { showConfigPicker = true }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = selectedConfig.name,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Palette.Ink,
+                            )
+                            Text(
+                                text = selectedConfig.description,
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp,
+                                color = Palette.PineMuted,
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = stringResourceSafe(R.string.bypass_config_change),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Palette.Ink,
+                        )
+                    }
+                    if (selectedConfig.warnings.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = stringResourceSafe(
+                                R.string.bypass_config_notes,
+                                selectedConfig.warnings.joinToString(", "),
+                            ),
+                            fontSize = 10.sp,
+                            lineHeight = 14.sp,
+                            color = Palette.PineMuted,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = onBypassConfigImport,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = Palette.Milk,
+                        contentColor = Palette.Ink,
+                    ),
+                ) {
                     Text(
-                        text = stringResourceSafe(R.string.bypass_desync_hint),
-                        fontSize = 11.sp,
-                        lineHeight = 16.sp,
-                        color = Palette.PineMuted,
+                        text = stringResourceSafe(R.string.bypass_config_import),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
                     )
                 }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = stringResourceSafe(R.string.bypass_config_import_hint),
+                    fontSize = 10.sp,
+                    lineHeight = 14.sp,
+                    color = Palette.PineMuted,
+                )
             }
         }
 
@@ -468,6 +542,187 @@ fun SettingsScreen(
                     }
                 }
             }
+        }
+    }
+
+    if (showConfigPicker) {
+        BypassConfigDialog(
+            configs = bypassConfigs,
+            selectedId = selectedConfig?.id,
+            onSelect = {
+                onBypassConfigSelect(it)
+                showConfigPicker = false
+            },
+            onDelete = onBypassConfigDelete,
+            onImport = {
+                showConfigPicker = false
+                onBypassConfigImport()
+            },
+            onDismiss = { showConfigPicker = false },
+        )
+    }
+}
+
+/** Picker that mirrors zapret's config list and lists imported configs below it. */
+@Composable
+private fun BypassConfigDialog(
+    configs: List<BypassProfile>,
+    selectedId: String?,
+    onSelect: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onImport: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val presets = configs.filter { it.builtIn }
+    val custom = configs.filterNot { it.builtIn }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(24.dp),
+        containerColor = Palette.Milk,
+        titleContentColor = Palette.Ink,
+        textContentColor = Palette.PineMuted,
+        title = {
+            Text(
+                text = stringResourceSafe(R.string.bypass_config_picker_title),
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        },
+        text = {
+            LazyColumn(
+                modifier = Modifier.heightIn(max = 420.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                item {
+                    ConfigGroupTitle(stringResourceSafe(R.string.bypass_config_presets))
+                }
+                items(presets, key = { it.id }) { profile ->
+                    ConfigOption(
+                        profile = profile,
+                        selected = profile.id == selectedId,
+                        onClick = { onSelect(profile.id) },
+                    )
+                }
+                item {
+                    Spacer(Modifier.height(6.dp))
+                    ConfigGroupTitle(stringResourceSafe(R.string.bypass_config_custom))
+                }
+                if (custom.isEmpty()) {
+                    item {
+                        Text(
+                            text = stringResourceSafe(R.string.bypass_config_empty),
+                            fontSize = 11.sp,
+                            color = Palette.PineMuted,
+                        )
+                    }
+                }
+                items(custom, key = { it.id }) { profile ->
+                    ConfigOption(
+                        profile = profile,
+                        selected = profile.id == selectedId,
+                        onClick = { onSelect(profile.id) },
+                        onDelete = { onDelete(profile.id) },
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(
+                    text = stringResourceSafe(R.string.action_close),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Palette.Ink,
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onImport) {
+                Text(
+                    text = stringResourceSafe(R.string.bypass_config_import),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Palette.Pine,
+                )
+            }
+        },
+    )
+}
+
+@Composable
+private fun ConfigGroupTitle(text: String) {
+    Text(
+        text = text,
+        fontSize = 10.sp,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 0.6.sp,
+        color = Palette.PineMuted,
+    )
+}
+
+@Composable
+private fun ConfigOption(
+    profile: BypassProfile,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onDelete: (() -> Unit)? = null,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (selected) Palette.LavenderLight else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = profile.name,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Palette.Ink,
+                )
+                Text(
+                    text = profile.description,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                    color = Palette.PineMuted,
+                )
+            }
+            if (selected) {
+                Text(
+                    text = "✓",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Palette.Pine,
+                )
+            }
+        }
+        if (profile.warnings.isNotEmpty()) {
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = stringResourceSafe(
+                    R.string.bypass_config_notes,
+                    profile.warnings.joinToString(", "),
+                ),
+                fontSize = 10.sp,
+                lineHeight = 14.sp,
+                color = Palette.PineMuted.copy(alpha = 0.85f),
+            )
+        }
+        if (onDelete != null) {
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = stringResourceSafe(R.string.bypass_config_delete),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Palette.Pine,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onDelete)
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+            )
         }
     }
 }

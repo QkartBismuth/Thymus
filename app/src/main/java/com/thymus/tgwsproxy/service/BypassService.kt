@@ -19,6 +19,7 @@ import com.thymus.tgwsproxy.R
 import com.thymus.tgwsproxy.bypass.BypassConfigs
 import com.thymus.tgwsproxy.bypass.BypassProfile
 import com.thymus.tgwsproxy.bypass.BypassStrategy
+import com.thymus.tgwsproxy.bypass.ProbeGuard
 import com.thymus.tgwsproxy.core.Packets
 import com.thymus.tgwsproxy.core.TcpRelay
 import com.thymus.tgwsproxy.core.TunSink
@@ -30,6 +31,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
@@ -209,6 +211,9 @@ class BypassService : VpnService() {
 
         tunnel = fd
         output = FileOutputStream(fd.fileDescriptor)
+        // Auto-selection probes from this process. The app is excluded from the tunnel,
+        // but keep the guard in case that exclusion was refused.
+        ProbeGuard.protect = { socket -> runCatching { protect(socket) }.getOrDefault(false) }
         applyProfile(BypassConfigs.selected(this))
         Log.d(TAG, "config: ${profile.name} (${profile.splitPositions}, oob=${profile.oob})")
         running = true
@@ -410,6 +415,7 @@ class BypassService : VpnService() {
 
     private fun shutdown() {
         running = false
+        ProbeGuard.protect = null
         handler.removeCallbacks(janitor)
         reader?.interrupt()
         reader = null

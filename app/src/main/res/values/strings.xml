@@ -85,6 +85,11 @@
     <string name="bypass_config_import_failed">Could not load the config: %1$s</string>
     <string name="bypass_config_deleted">Config deleted</string>
     <string name="bypass_config_applied">Config: %1$s</string>
+    <string name="bypass_auto">Auto-select config</string>
+    <string name="bypass_auto_running">Testing… %1$d/%2$d</string>
+    <string name="bypass_auto_hint">Sends a real TLS handshake to YouTube and Discord through each config and keeps the one that gets an answer.</string>
+    <string name="bypass_auto_selected">Auto: %1$s — %2$d of %3$d</string>
+    <string name="bypass_auto_failed">No config got through. Check the connection and try again.</string>
     <string name="bypass_config_picker_title">Bypass config</string>
     <string name="bypass_config_presets">Built-in</string>
     <string name="bypass_config_custom">My configs</string>

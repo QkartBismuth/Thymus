@@ -67,6 +67,10 @@ fun SettingsScreen(
     onBypassConfigSelect: (String) -> Unit,
     onBypassConfigDelete: (String) -> Unit,
     onBypassConfigImport: () -> Unit,
+    autoSelecting: Boolean,
+    autoDone: Int,
+    autoTotal: Int,
+    onBypassAutoSelect: () -> Unit,
     port: String,
     onPortChange: (String) -> Unit,
     secret: String,
@@ -437,7 +441,37 @@ fun SettingsScreen(
                         )
                     }
                 }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(10.dp))
+                Button(
+                    onClick = onBypassAutoSelect,
+                    enabled = !autoSelecting,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Palette.Pine,
+                        contentColor = Palette.OnPine,
+                        disabledContainerColor = Palette.Pine,
+                        disabledContentColor = Palette.OnPine,
+                    ),
+                ) {
+                    Text(
+                        text = if (autoSelecting) {
+                            stringResourceSafe(R.string.bypass_auto_running, autoDone, autoTotal)
+                        } else {
+                            stringResourceSafe(R.string.bypass_auto)
+                        },
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = stringResourceSafe(R.string.bypass_auto_hint),
+                    fontSize = 10.sp,
+                    lineHeight = 14.sp,
+                    color = Palette.PineMuted,
+                )
+                Spacer(Modifier.height(10.dp))
                 OutlinedButton(
                     onClick = onBypassConfigImport,
                     modifier = Modifier.fillMaxWidth(),

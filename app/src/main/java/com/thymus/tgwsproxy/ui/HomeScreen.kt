@@ -58,6 +58,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.thymus.tgwsproxy.R
 import com.thymus.tgwsproxy.bypass.BypassConfigs
 import com.thymus.tgwsproxy.bypass.BypassPresets
+import com.thymus.tgwsproxy.bypass.BypassProbe
 import com.thymus.tgwsproxy.core.DcInfo
 import com.thymus.tgwsproxy.core.ProxyConfig
 import com.thymus.tgwsproxy.core.ProxyDiagnostics
@@ -104,6 +105,9 @@ fun HomeScreen() {
     var bypassEnabled by remember { mutableStateOf(Settings.isBypassEnabled(context)) }
     var bypassConfigs by remember { mutableStateOf(BypassConfigs.all(context)) }
     var bypassConfigId by remember { mutableStateOf(Settings.bypassConfigId(context)) }
+    var autoSelecting by remember { mutableStateOf(false) }
+    var autoDone by remember { mutableStateOf(0) }
+    var autoTotal by remember { mutableStateOf(0) }
 
     fun refreshConfigs() {
         bypassConfigs = BypassConfigs.all(context)
@@ -124,6 +128,44 @@ fun HomeScreen() {
         refreshConfigs()
         if (bypassConfigId == id) selectConfig(BypassPresets.DEFAULT_ID, notify = false)
         scope.launch { snackbar.showSnackbar(context.getString(R.string.bypass_config_deleted)) }
+    }
+
+    /**
+     * Sends a real ClientHello through every config and keeps the one the servers answer
+     * to. Runs off the main thread; the VPN (if on) is bypassed for the probe sockets.
+     */
+    fun autoSelectConfig() {
+        if (autoSelecting) return
+        val profiles = bypassConfigs
+        if (profiles.isEmpty()) return
+        autoSelecting = true
+        autoDone = 0
+        autoTotal = profiles.size
+        scope.launch {
+            val scores = withContext(Dispatchers.IO) {
+                BypassProbe.evaluate(profiles) { done, total ->
+                    scope.launch {
+                        autoDone = done
+                        autoTotal = total
+                    }
+                }
+            }
+            autoSelecting = false
+            val best = BypassProbe.rank(scores)
+            if (best == null) {
+                snackbar.showSnackbar(context.getString(R.string.bypass_auto_failed))
+            } else {
+                selectConfig(best.profile.id, notify = false)
+                snackbar.showSnackbar(
+                    context.getString(
+                        R.string.bypass_auto_selected,
+                        best.profile.name,
+                        best.ok,
+                        best.total,
+                    ),
+                )
+            }
+        }
     }
 
     val bypassPermission = rememberLauncherForActivityResult(
@@ -290,6 +332,10 @@ fun HomeScreen() {
                     onBypassConfigSelect = { selectConfig(it) },
                     onBypassConfigDelete = { deleteConfig(it) },
                     onBypassConfigImport = { importConfig.launch(arrayOf("*/*")) },
+                    autoSelecting = autoSelecting,
+                    autoDone = autoDone,
+                    autoTotal = autoTotal,
+                    onBypassAutoSelect = { autoSelectConfig() },
                     port = portText,
                     onPortChange = { portText = it },
                     secret = secretText,

@@ -390,6 +390,10 @@ internal class TcpRelay(
             val second = tlsRecord(data, firstLength, recordLength - firstLength)
             out.write(first)
             out.flush()
+            // zapret's oob trick: one urgent byte between the records. The server's TCP
+            // stack removes it from the normal stream, but a DPI that reads the payload
+            // literally sees a stray byte inside the handshake and loses the SNI.
+            runCatching { socket.sendUrgentData(0) }
             runCatching { Thread.sleep(SPLIT_DELAY_MS) }
             out.write(second)
             out.flush()
@@ -398,7 +402,7 @@ internal class TcpRelay(
                 out.write(data, tail, data.size - tail)
                 out.flush()
             }
-            Log.d(TAG, "ClientHello ${data.size}B: two TLS records, cut at $cut")
+            Log.d(TAG, "ClientHello ${data.size}B: two TLS records + OOB, cut at $cut")
             return
         }
 
@@ -447,9 +451,15 @@ internal class TcpRelay(
                         val nameLength = u16(data, body + 3)
                         val nameStart = body + 5
                         if (nameLength > 2 && nameStart + nameLength <= end) {
-                            // Cut in the middle: neither half keeps a recognizable domain
-                            // suffix, so a matcher that looks at one record at a time sees
-                            // "www.you" and "tube.com" rather than the blocked name.
+                            // Cut inside the sensitive word itself (zapret's midsld idea):
+                            // "youtubei.googleapis.com" becomes "yout" + "ubei.googleapis.com",
+                            // so neither record contains a keyword a DPI can match. Cutting in
+                            // the middle of the whole name would leave "youtubei.goog" intact.
+                            val nameEnd = nameStart + nameLength
+                            for (token in SENSITIVE_TOKENS) {
+                                val at = indexOfIgnoreCase(data, nameStart, nameEnd, token)
+                                if (at >= 0) return at + token.length / 2
+                            }
                             return nameStart + nameLength / 2
                         }
                         return null
@@ -470,6 +480,25 @@ internal class TcpRelay(
 
     private fun u16(data: ByteArray, offset: Int): Int =
         ((data[offset].toInt() and 0xFF) shl 8) or (data[offset + 1].toInt() and 0xFF)
+
+    /** Lowercase ASCII search inside [from, to), used to find a blocked word in the SNI. */
+    private fun indexOfIgnoreCase(data: ByteArray, from: Int, to: Int, token: String): Int {
+        var i = from
+        while (i + token.length <= to) {
+            var match = true
+            for (j in token.indices) {
+                val c = data[i + j].toInt() and 0xFF
+                val lower = if (c in 'A'.code..'Z'.code) c + 32 else c
+                if (lower != token[j].code) {
+                    match = false
+                    break
+                }
+            }
+            if (match) return i
+            i++
+        }
+        return -1
+    }
 
     private fun reset() {
         if (!closed) {
@@ -525,6 +554,12 @@ internal class TcpRelay(
         const val HELLO_WAIT_MS = 300L
         const val MAX_HELLO = 16 * 1024
         const val TAG = "ThymusBypass"
+
+        /** Words the filter looks for; the ClientHello is cut inside one of them. */
+        val SENSITIVE_TOKENS = listOf(
+            "youtube", "youtu", "googlevideo", "googleapis", "ytimg", "ggpht",
+            "discord", "telegram",
+        )
 
         /** Wraparound-safe comparison of two 32-bit TCP sequence numbers. */
         fun seqDiff(a: Long, b: Long): Int = (a - b).toInt()

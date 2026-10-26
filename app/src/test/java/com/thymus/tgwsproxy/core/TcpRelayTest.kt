@@ -119,6 +119,36 @@ class TcpRelayTest {
     }
 
     @Test
+    fun cutsInsideTheBlockedWordSoNoFragmentContainsIt() {
+        val relay = relay(desync = true)
+        relay.start(executor)
+        val upstream = server.accept()
+        upstream.soTimeout = 3000
+        val synAck = await { p -> p.flags and Packets.TCP_SYN != 0 }
+
+        val hello = clientHello("youtubei.googleapis.com")
+        relay.onPacket(
+            packet(
+                seq = clientIsn + 1,
+                ack = synAck.seq + 1,
+                flags = Packets.TCP_ACK or Packets.TCP_PSH,
+                payload = hello,
+            ),
+        )
+
+        val input = upstream.getInputStream()
+        val first = String(readRecord(input), Charsets.ISO_8859_1)
+        val second = String(readRecord(input), Charsets.ISO_8859_1)
+
+        // A filter that matches one fragment at a time must not see the word "youtube".
+        assertFalse("first fragment still contains the blocked word", first.contains("youtube"))
+        assertFalse("second fragment still contains the blocked word", second.contains("youtube"))
+        assertTrue("the handshake was not split", first.length > 5 && second.length > 5)
+        relay.close()
+        runCatching { upstream.close() }
+    }
+
+    @Test
     fun retransmittedSegmentIsAcknowledgedWithoutDuplicatingData() {
         val relay = relay(desync = false)
         relay.start(executor)

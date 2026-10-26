@@ -72,11 +72,11 @@
     <string name="action_later">Позже</string>
 
     <string name="section_bypass">Обход блокировок</string>
-    <string name="bypass_title">Обход DPI (экспериментально)</string>
-    <string name="bypass_hint_on">Включено: TLS-рукопожатие переупаковывается, QUIC идёт через локальный VPN. Помогает только при поверхностной фильтрации.</string>
+    <string name="bypass_title">Обход DPI (метод zapret)</string>
+    <string name="bypass_hint_on">Включено: TLS-рукопожатие режется внутри заблокированного слова и разделяется внеполосным (OOB) байтом, QUIC идёт через локальный VPN. Обходит фильтрацию по SNI, но не блокировку по IP.</string>
     <string name="bypass_hint_pending">Включается…</string>
-    <string name="bypass_hint_off">Попытка обойти фильтрацию по SNI через локальный VPN. Глубокую инспекцию, которая собирает TLS-записи и блокирует QUIC, без root не обойти.</string>
-    <string name="bypass_desync">Переупаковывать TLS-рукопожатие</string>
+    <string name="bypass_hint_off">Локальный VPN повторяет приёмы zapret: дробление TLS-рукопожатия и OOB-байт. Помогает при фильтрации по SNI; при блокировке по IP или полной сборке потока — нет.</string>
+    <string name="bypass_desync">Дробить TLS-рукопожатие</string>
     <string name="bypass_desync_hint">Если сайты перестали открываться, выключите: трафик пойдёт без изменений.</string>
     <string name="bypass_permission_denied">Без разрешения VPN обход не включить</string>
     <string name="bypass_error">Не удалось поднять VPN</string>

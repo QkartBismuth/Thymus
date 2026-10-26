@@ -17,7 +17,7 @@ fun sha256(vararg parts: ByteArray): ByteArray {
 }
 
 /**
- * AES-128-CTR keystream, matching pycryptodome `modes.CTR` (16-byte big-endian counter)
+ * AES-128-CTR keystream, matching pycryptodome `modes.CTR` (16-byte big-endian counter),
  * which MTProto obfuscated transport uses.
  *
  * CTR is symmetric, so the same class is used for both directions; each stream instance

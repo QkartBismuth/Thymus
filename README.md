@@ -2,8 +2,8 @@
 
 [![Build APK](https://github.com/QkartBismuth/Thymus/actions/workflows/build.yml/badge.svg)](https://github.com/QkartBismuth/Thymus/actions/workflows/build.yml)
 
-Нативное Android-приложение: локальный MTProto-прокси,
-который гоняет трафик Telegram через WebSocket к серверам Telegram.
+Нативное Android-приложение: локальный MTProto-прокси, который гоняет трафик Telegram
+через WebSocket к серверам Telegram.
 
 ```
 Telegram (на телефоне) → 127.0.0.1:1443 → WebSocket (TLS) → DC Telegram
@@ -273,7 +273,7 @@ keyPassword=...
 
 ## Если фото/видео не грузятся
 
-в настройках прокси в Telegram (DC → IP) оставьте только
+В настройках прокси в Telegram (DC → IP) оставьте только
 `4:149.154.167.220` либо очистите поле. Поле «DC → IP» в настройках приложения
 задаёт, какие DC идут через WebSocket; остальные уходят в TCP/CF-резерв.
 Если оставить это поле пустым, прямой WebSocket не используется вовсе — работают
@@ -281,7 +281,7 @@ keyPassword=...
 
 ## Ограничения
 
-Не перенесено: HTTP/2-мультиплексирование для медиа, Cloudflare Worker, Fake TLS
+Не реализовано: HTTP/2-мультиплексирование для медиа, Cloudflare Worker, Fake TLS
 (на loopback не нужен — клиент и прокси на одном устройстве), PROXY protocol.
 Список CF-доменов обновляется с GitHub при запуске (если поле не переопределено вручную).
 

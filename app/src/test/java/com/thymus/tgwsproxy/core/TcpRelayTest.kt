@@ -1,6 +1,7 @@
 package com.thymus.tgwsproxy.core
 
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -89,18 +90,29 @@ class TcpRelayTest {
             ),
         )
 
-        val first = ByteArray(hello.size)
-        val firstRead = upstream.getInputStream().read(first)
-        val rest = readExactly(upstream, hello.size - firstRead)
-        val joined = String(first.copyOf(firstRead), Charsets.ISO_8859_1) + rest
-        assertTrue("handshake was not split", firstRead < hello.size)
+        val input = upstream.getInputStream()
+        val firstRecord = readRecord(input)
+        val secondRecord = readRecord(input)
+
+        val firstLength = ((firstRecord[3].toInt() and 0xFF) shl 8) or (firstRecord[4].toInt() and 0xFF)
+        val secondLength = ((secondRecord[3].toInt() and 0xFF) shl 8) or (secondRecord[4].toInt() and 0xFF)
+
+        assertEquals("first record is not a handshake record", 0x16, firstRecord[0].toInt())
+        assertEquals("second record is not a handshake record", 0x16, secondRecord[0].toInt())
         assertFalse(
-            "the whole hostname went out in the first segment",
-            String(first.copyOf(firstRead), Charsets.ISO_8859_1).contains("rutracker.org"),
+            "the whole hostname went out in the first record",
+            String(firstRecord, Charsets.ISO_8859_1).contains("rutracker.org"),
         )
-        assertTrue(
-            "the handshake did not survive the split",
-            joined.contains("rutracker.org"),
+        assertFalse(
+            "the whole hostname went out in the second record",
+            String(secondRecord, Charsets.ISO_8859_1).contains("rutracker.org"),
+        )
+        val body = firstRecord.copyOfRange(5, 5 + firstLength) +
+            secondRecord.copyOfRange(5, 5 + secondLength)
+        assertArrayEquals(
+            "the reframed records do not reassemble into the original handshake",
+            hello.copyOfRange(5, hello.size),
+            body,
         )
         relay.close()
         runCatching { upstream.close() }
@@ -231,6 +243,25 @@ class TcpRelayTest {
             Thread.sleep(5)
         }
         throw AssertionError("expected $count matching packets")
+    }
+
+    private fun readRecord(input: java.io.InputStream): ByteArray {
+        val header = ByteArray(5)
+        var read = 0
+        while (read < 5) {
+            val n = input.read(header, read, 5 - read)
+            if (n < 0) break
+            read += n
+        }
+        val length = ((header[3].toInt() and 0xFF) shl 8) or (header[4].toInt() and 0xFF)
+        val body = ByteArray(length)
+        read = 0
+        while (read < length) {
+            val n = input.read(body, read, length - read)
+            if (n < 0) break
+            read += n
+        }
+        return header + body
     }
 
     private fun readExactly(socket: Socket, size: Int): String {

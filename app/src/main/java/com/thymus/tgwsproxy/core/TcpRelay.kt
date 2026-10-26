@@ -1,6 +1,7 @@
 package com.thymus.tgwsproxy.core
 
 import android.os.SystemClock
+import android.util.Log
 import java.io.OutputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -18,9 +19,10 @@ internal fun interface TunSink {
  *
  * The device believes it talks to the real server; in fact it talks to this class, which
  * keeps a second, ordinary socket to the server. Because we own the device-side TCP
- * stream, the first TLS ClientHello can be split into two segments (at a byte inside the
- * SNI hostname) before it is written upstream — the cheapest DPI evasion that works
- * without root and raw sockets.
+ * stream, the first TLS ClientHello is rewritten into two TLS records with the cut in
+ * the middle of the SNI hostname. That defeats filters that inspect a single packet or a
+ * single record; a DPI that reassembles handshake messages across records still sees the
+ * name, and without root there is no way to reorder or fake packets.
  *
  * Device payload is queued and written by a dedicated writer task, never on the thread
  * that reads the TUN device: one slow server must not stall every other connection.
@@ -156,6 +158,7 @@ internal class TcpRelay(
             reset()
             return
         }
+        var first = true
         while (true) {
             val chunk = synchronized(queueLock) {
                 while (pending.isEmpty() && !closed) {
@@ -170,30 +173,81 @@ internal class TcpRelay(
 
             try {
                 if (chunk.fin) {
-                    out.flush()
-                    runCatching { socket.shutdownOutput() }
-                    synchronized(lock) {
-                        clientSeq = (clientSeq + 1) and MASK
-                        send(Packets.TCP_ACK, EMPTY, serverSeq, clientSeq)
-                    }
+                    finishUpstream(out)
                     break
                 }
-                if (desync && !desynced && isTlsHandshake(chunk.data)) {
+                var finAfter = false
+                if (first && desync && isTlsHandshake(chunk.data)) {
                     desynced = true
-                    writeSplit(out, chunk.data)
+                    val hello = gatherClientHello(chunk)
+                    writeDesync(out, hello.data)
+                    finAfter = hello.fin
+                    synchronized(lock) {
+                        clientSeq = (clientSeq + hello.data.size) and MASK
+                        send(Packets.TCP_ACK, EMPTY, serverSeq, clientSeq)
+                    }
                 } else {
                     out.write(chunk.data)
                     out.flush()
+                    synchronized(lock) {
+                        clientSeq = (clientSeq + chunk.data.size) and MASK
+                        send(Packets.TCP_ACK, EMPTY, serverSeq, clientSeq)
+                    }
                 }
-                synchronized(lock) {
-                    clientSeq = (clientSeq + chunk.data.size) and MASK
-                    send(Packets.TCP_ACK, EMPTY, serverSeq, clientSeq)
+                first = false
+                if (finAfter) {
+                    finishUpstream(out)
+                    break
                 }
             } catch (_: Throwable) {
                 reset()
                 return
             }
         }
+    }
+
+    private fun finishUpstream(out: OutputStream) {
+        runCatching { out.flush() }
+        runCatching { socket.shutdownOutput() }
+        synchronized(lock) {
+            clientSeq = (clientSeq + 1) and MASK
+            send(Packets.TCP_ACK, EMPTY, serverSeq, clientSeq)
+        }
+    }
+
+    /**
+     * A ClientHello larger than one segment arrives in pieces. Wait for the rest of the
+     * first TLS record so the whole handshake can be refragmented at once.
+     */
+    private fun gatherClientHello(first: Chunk): Gathered {
+        var data = first.data
+        var extra = 0
+        var fin = false
+        val deadline = clock() + HELLO_WAIT_MS
+        while (data.size >= 5) {
+            val recordEnd = 5 + u16(data, 3)
+            if (recordEnd > MAX_HELLO || data.size >= recordEnd) break
+            if (clock() >= deadline) break
+            val next = synchronized(queueLock) {
+                if (pending.isEmpty() && !closed) {
+                    try {
+                        queueLock.wait(50)
+                    } catch (_: InterruptedException) {
+                        return Gathered(data, extra, true)
+                    }
+                }
+                if (closed) null else pending.removeFirstOrNull()
+            }
+            if (closed) break
+            if (next == null) continue
+            if (next.fin) {
+                fin = true
+                break
+            }
+            data += next.data
+            extra += next.data.size
+        }
+        return Gathered(data, extra, fin)
     }
 
     private fun upstreamLoop() {
@@ -318,21 +372,55 @@ internal class TcpRelay(
     }
 
     /**
-     * Splits the ClientHello at a byte inside the SNI hostname, so neither TCP segment
-     * carries the full blocked name. Falls back to a one-byte first segment.
+     * Reframes the ClientHello into two TLS records with the cut inside the SNI name.
+     *
+     * A plain TCP split only hides the name from a DPI that inspects single packets.
+     * Two records also hide it from a per-record scanner, because neither record holds
+     * the whole name. A DPI that reassembles the handshake across records is not fooled;
+     * that limitation cannot be fixed from a userspace socket.
      */
-    private fun writeSplit(out: OutputStream, data: ByteArray) {
-        val cut = sniCut(data) ?: 1
-        if (cut <= 0 || cut >= data.size) {
-            out.write(data)
+    private fun writeDesync(out: OutputStream, data: ByteArray) {
+        val cut = sniCut(data)
+        val recordLength = if (data.size >= 5) u16(data, 3) else 0
+        val firstLength = if (cut == null) 0 else cut - 5
+        val reframe = firstLength in 1 until recordLength && data.size >= 5 + recordLength
+
+        if (reframe) {
+            val first = tlsRecord(data, 0, firstLength)
+            val second = tlsRecord(data, firstLength, recordLength - firstLength)
+            out.write(first)
             out.flush()
+            runCatching { Thread.sleep(SPLIT_DELAY_MS) }
+            out.write(second)
+            out.flush()
+            val tail = 5 + recordLength
+            if (data.size > tail) {
+                out.write(data, tail, data.size - tail)
+                out.flush()
+            }
+            Log.d(TAG, "ClientHello ${data.size}B: two TLS records, cut at $cut")
             return
         }
-        out.write(data, 0, cut)
+
+        val at = if (cut != null && cut in 1 until data.size) cut else 1
+        out.write(data, 0, at)
         out.flush()
         runCatching { Thread.sleep(SPLIT_DELAY_MS) }
-        out.write(data, cut, data.size - cut)
+        out.write(data, at, data.size - at)
         out.flush()
+        Log.d(TAG, "ClientHello ${data.size}B: TCP split at $at")
+    }
+
+    /** Copy of the first record's header with a new length and a slice of its body. */
+    private fun tlsRecord(source: ByteArray, bodyOffset: Int, length: Int): ByteArray {
+        val record = ByteArray(5 + length)
+        record[0] = 0x16
+        record[1] = source[1]
+        record[2] = source[2]
+        record[3] = ((length shr 8) and 0xFF).toByte()
+        record[4] = (length and 0xFF).toByte()
+        source.copyInto(record, 5, 5 + bodyOffset, 5 + bodyOffset + length)
+        return record
     }
 
     /** Offset inside the SNI name where the handshake can be cut, or null when unknown. */
@@ -359,7 +447,10 @@ internal class TcpRelay(
                         val nameLength = u16(data, body + 3)
                         val nameStart = body + 5
                         if (nameLength > 2 && nameStart + nameLength <= end) {
-                            return nameStart + 2
+                            // Cut in the middle: neither half keeps a recognizable domain
+                            // suffix, so a matcher that looks at one record at a time sees
+                            // "www.you" and "tube.com" rather than the blocked name.
+                            return nameStart + nameLength / 2
                         }
                         return null
                     }
@@ -410,6 +501,8 @@ internal class TcpRelay(
 
     private class Chunk(val data: ByteArray, val fin: Boolean)
 
+    private class Gathered(val data: ByteArray, val extra: Int, val fin: Boolean)
+
     private class OutSegment(
         val seq: Long,
         val data: ByteArray,
@@ -429,6 +522,9 @@ internal class TcpRelay(
         const val MAX_RTO_MS = 4000L
         const val RETRANSMIT_TICK_MS = 100L
         const val MAX_RETRIES = 8
+        const val HELLO_WAIT_MS = 300L
+        const val MAX_HELLO = 16 * 1024
+        const val TAG = "ThymusBypass"
 
         /** Wraparound-safe comparison of two 32-bit TCP sequence numbers. */
         fun seqDiff(a: Long, b: Long): Int = (a - b).toInt()

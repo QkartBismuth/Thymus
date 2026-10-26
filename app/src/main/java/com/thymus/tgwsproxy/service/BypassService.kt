@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.thymus.tgwsproxy.MainActivity
 import com.thymus.tgwsproxy.R
@@ -30,13 +31,15 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
 /**
- * Local VPN that evades DPI without root.
+ * Local VPN that tries to evade DPI without root.
  *
  * It terminates every TCP connection from the device, re-opens it as an ordinary socket
- * from this app and splits the first TLS ClientHello inside the SNI hostname. QUIC
- * (UDP 443) is dropped so YouTube falls back to TCP, and DNS is relayed through the VPN.
- * The app itself is excluded from the tunnel, so the MTProto proxy keeps working and the
- * relay sockets never loop back into the VPN.
+ * from this app and reframes the first TLS ClientHello inside the SNI hostname. QUIC
+ * (UDP 443) and DNS are relayed through the VPN. The app itself is excluded from the
+ * tunnel, so the MTProto proxy keeps working and the relay sockets never loop back.
+ *
+ * This is best-effort evasion, not a tunnel: a DPI that reassembles TLS records and
+ * blocks UDP 443 cannot be bypassed from userspace without root.
  */
 class BypassService : VpnService() {
 
@@ -50,6 +53,7 @@ class BypassService : VpnService() {
         private const val TELEGRAM_PACKAGE = "org.telegram.messenger"
         private const val MAX_TCP_FLOWS = 256
         private const val MAX_UDP_FLOWS = 256
+        private const val TAG = "ThymusBypass"
 
         fun start(context: Context) {
             val intent = Intent(context, BypassService::class.java).setAction(ACTION_START)
@@ -246,26 +250,12 @@ class BypassService : VpnService() {
     }
 
     /**
-     * QUIC is dropped on purpose: it is what YouTube uses by default, and a TCP
-     * connection can be desynced while QUIC cannot. The client is told the port is
-     * closed so it moves to TCP immediately. Everything else keeps a small per-flow
-     * socket, which is enough for DNS and Discord voice.
+     * QUIC (UDP 443) is relayed like any other UDP flow. Its SNI travels inside the
+     * encrypted Initial packet, so a DPI that filters TCP TLS by hostname cannot see it.
+     * Dropping QUIC here used to force clients onto TCP, where this provider's filter
+     * drops the handshake outright.
      */
     private fun handleUdp(packet: Packets.Ip) {
-        if (packet.dstPort == 443) {
-            writePacket(
-                Packets.icmpPortUnreachable(
-                    remote = packet.dst,
-                    local = packet.src,
-                    origSrc = packet.src,
-                    origDst = packet.dst,
-                    origSrcPort = packet.srcPort,
-                    origDstPort = packet.dstPort,
-                    origPayloadLength = packet.payload.size,
-                ),
-            )
-            return
-        }
         val key = keyOf(packet)
         val existing = udpFlows[key]
         if (existing != null) {
@@ -309,11 +299,16 @@ class BypassService : VpnService() {
 
         private fun receiveLoop(socket: DatagramSocket) {
             val buffer = ByteArray(4096)
+            var loggedReply = first.dstPort != 443
             while (!closed) {
                 try {
                     val response = DatagramPacket(buffer, buffer.size)
                     socket.receive(response)
                     lastActive = SystemClock.elapsedRealtime()
+                    if (!loggedReply) {
+                        loggedReply = true
+                        Log.d(TAG, "QUIC reply ${response.length}B from ${response.address.hostAddress}")
+                    }
                     writePacket(
                         Packets.udp(
                             src = first.dst,

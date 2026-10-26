@@ -55,6 +55,11 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     darkTheme: Boolean,
     onThemeChange: (Boolean) -> Unit,
+    bypassEnabled: Boolean,
+    bypassRunning: Boolean,
+    bypassDesync: Boolean,
+    onBypassChange: (Boolean) -> Unit,
+    onBypassDesyncChange: (Boolean) -> Unit,
     port: String,
     onPortChange: (String) -> Unit,
     secret: String,
@@ -343,6 +348,44 @@ fun SettingsScreen(
                     lineHeight = 16.sp,
                     color = Palette.PineMuted,
                 )
+            }
+        }
+
+        item {
+            SectionCard {
+                SectionTitle(stringResourceSafe(R.string.section_bypass))
+                ToggleRow(
+                    title = stringResourceSafe(R.string.bypass_title),
+                    checked = bypassEnabled,
+                    onChange = onBypassChange,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = stringResourceSafe(
+                        when {
+                            bypassEnabled && bypassRunning -> R.string.bypass_hint_on
+                            bypassEnabled -> R.string.bypass_hint_pending
+                            else -> R.string.bypass_hint_off
+                        },
+                    ),
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp,
+                    color = Palette.PineMuted,
+                )
+                if (bypassEnabled) {
+                    Spacer(Modifier.height(6.dp))
+                    ToggleRow(
+                        title = stringResourceSafe(R.string.bypass_desync),
+                        checked = bypassDesync,
+                        onChange = onBypassDesyncChange,
+                    )
+                    Text(
+                        text = stringResourceSafe(R.string.bypass_desync_hint),
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                        color = Palette.PineMuted,
+                    )
+                }
             }
         }
 

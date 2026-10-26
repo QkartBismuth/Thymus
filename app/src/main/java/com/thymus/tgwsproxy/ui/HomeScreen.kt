@@ -1,11 +1,15 @@
 package com.thymus.tgwsproxy.ui
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.net.VpnService
 import android.os.PowerManager
 import android.provider.Settings as AndroidSettings
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -55,7 +59,9 @@ import com.thymus.tgwsproxy.core.DcInfo
 import com.thymus.tgwsproxy.core.ProxyConfig
 import com.thymus.tgwsproxy.core.ProxyDiagnostics
 import com.thymus.tgwsproxy.data.Settings
+import com.thymus.tgwsproxy.service.BypassService
 import com.thymus.tgwsproxy.service.ProxyService
+import com.thymus.tgwsproxy.state.BypassState
 import com.thymus.tgwsproxy.state.ProxyLog
 import com.thymus.tgwsproxy.state.ProxyState
 import kotlinx.coroutines.Dispatchers
@@ -90,6 +96,41 @@ fun HomeScreen() {
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showBatteryPrompt by rememberSaveable { mutableStateOf(false) }
 
+    val bypassRunning by BypassState.running.collectAsStateWithLifecycle()
+    var bypassEnabled by remember { mutableStateOf(Settings.isBypassEnabled(context)) }
+    var bypassDesync by remember { mutableStateOf(Settings.isBypassDesync(context)) }
+
+    val bypassPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            Settings.setBypassEnabled(context, true)
+            bypassEnabled = true
+            BypassService.start(context)
+        } else {
+            Settings.setBypassEnabled(context, false)
+            bypassEnabled = false
+            scope.launch { snackbar.showSnackbar(context.getString(R.string.bypass_permission_denied)) }
+        }
+    }
+
+    fun setBypass(enabled: Boolean) {
+        if (!enabled) {
+            Settings.setBypassEnabled(context, false)
+            bypassEnabled = false
+            BypassService.stop(context)
+            return
+        }
+        val consent = VpnService.prepare(context)
+        if (consent != null) {
+            bypassPermission.launch(consent)
+        } else {
+            Settings.setBypassEnabled(context, true)
+            bypassEnabled = true
+            BypassService.start(context)
+        }
+    }
+
     // Ask once, on the first launch, for the exemption that keeps Android from killing the
     // proxy while the screen is off. The same action stays available in Settings.
     LaunchedEffect(Unit) {
@@ -107,8 +148,26 @@ fun HomeScreen() {
         }
     }
 
+    LaunchedEffect(Unit) {
+        if (Settings.isBypassEnabled(context) &&
+            !BypassState.running.value &&
+            VpnService.prepare(context) == null
+        ) {
+            BypassService.start(context)
+        }
+    }
+
+    LaunchedEffect(bypassRunning) {
+        bypassEnabled = Settings.isBypassEnabled(context)
+    }
+
     LaunchedEffect(error) {
         error?.let { snackbar.showSnackbar(it) }
+    }
+
+    val bypassError by BypassState.error.collectAsStateWithLifecycle()
+    LaunchedEffect(bypassError) {
+        bypassError?.let { snackbar.showSnackbar(it) }
     }
 
     fun copy(text: String, label: String) {
@@ -165,6 +224,14 @@ fun HomeScreen() {
                         .padding(innerPadding),
                     darkTheme = ThemeState.isDark,
                     onThemeChange = { applyTheme(context, it) },
+                    bypassEnabled = bypassEnabled,
+                    bypassRunning = bypassRunning,
+                    bypassDesync = bypassDesync,
+                    onBypassChange = { setBypass(it) },
+                    onBypassDesyncChange = {
+                        bypassDesync = it
+                        Settings.setBypassDesync(context, it)
+                    },
                     port = portText,
                     onPortChange = { portText = it },
                     secret = secretText,

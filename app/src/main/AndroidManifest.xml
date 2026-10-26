@@ -64,6 +64,19 @@
             android:name=".service.WatchdogReceiver"
             android:enabled="true"
             android:exported="false" />
+
+        <service
+            android:name=".service.BypassService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:permission="android.permission.BIND_VPN_SERVICE">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <property
+                android:name="android:PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Local VPN that evades DPI for YouTube and Discord" />
+        </service>
     </application>
 
 </manifest>

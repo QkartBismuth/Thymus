@@ -70,4 +70,16 @@
     <string name="battery_prompt_body">Android may kill the proxy while the screen is off. Allow the app to run without battery optimization so the proxy keeps running.</string>
     <string name="action_allow">Allow</string>
     <string name="action_later">Later</string>
+
+    <string name="section_bypass">Bypass</string>
+    <string name="bypass_title">DPI bypass (YouTube, Discord)</string>
+    <string name="bypass_hint_on">On: the TLS handshake is split and QUIC is disabled. Traffic goes through a local VPN.</string>
+    <string name="bypass_hint_pending">Starting…</string>
+    <string name="bypass_hint_off">Helps when your provider filters traffic by SNI. Requires VPN permission.</string>
+    <string name="bypass_desync">Split the TLS handshake</string>
+    <string name="bypass_desync_hint">Turn this off if sites stop opening: traffic will go out without fragmentation.</string>
+    <string name="bypass_permission_denied">The bypass needs VPN permission</string>
+    <string name="bypass_error">Could not start the VPN</string>
+    <string name="bypass_channel">DPI bypass</string>
+    <string name="bypass_notification">DPI bypass is on</string>
 </resources>

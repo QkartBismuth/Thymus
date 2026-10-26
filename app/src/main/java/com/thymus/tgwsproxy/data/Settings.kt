@@ -18,6 +18,8 @@ object Settings {
     private const val KEY_DARK_THEME = "dark_theme"
     private const val KEY_ENABLED = "proxy_enabled"
     private const val KEY_BATTERY_PROMPT = "battery_prompt_shown"
+    private const val KEY_BYPASS_ENABLED = "bypass_enabled"
+    private const val KEY_BYPASS_DESYNC = "bypass_desync"
 
     fun secret(context: Context): String {
         val prefs = prefs(context)
@@ -91,6 +93,19 @@ object Settings {
 
     fun setBatteryPromptShown(context: Context) {
         prefs(context).edit().putBoolean(KEY_BATTERY_PROMPT, true).apply()
+    }
+
+    fun isBypassEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_BYPASS_ENABLED, false)
+
+    fun setBypassEnabled(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean(KEY_BYPASS_ENABLED, value).apply()
+    }
+
+    /** Split the TLS ClientHello before sending it upstream. */
+    fun isBypassDesync(context: Context): Boolean = prefs(context).getBoolean(KEY_BYPASS_DESYNC, true)
+
+    fun setBypassDesync(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean(KEY_BYPASS_DESYNC, value).apply()
     }
 
     private fun prefs(context: Context) =

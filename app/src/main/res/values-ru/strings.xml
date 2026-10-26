@@ -70,4 +70,16 @@
     <string name="battery_prompt_body">Android может выгрузить прокси из памяти, когда экран выключен. Разрешите приложению работу без оптимизации батареи — тогда прокси останется запущенным.</string>
     <string name="action_allow">Разрешить</string>
     <string name="action_later">Позже</string>
+
+    <string name="section_bypass">Обход блокировок</string>
+    <string name="bypass_title">Обход DPI (YouTube, Discord)</string>
+    <string name="bypass_hint_on">Включено: TLS-рукопожатие делится на части, QUIC отключается. Трафик идёт через локальный VPN.</string>
+    <string name="bypass_hint_pending">Включается…</string>
+    <string name="bypass_hint_off">Помогает, когда провайдер фильтрует трафик по SNI. Потребуется разрешение VPN.</string>
+    <string name="bypass_desync">Разбивать TLS-рукопожатие</string>
+    <string name="bypass_desync_hint">Если сайты перестали открываться, выключите: трафик пойдёт без фрагментации.</string>
+    <string name="bypass_permission_denied">Без разрешения VPN обход не включить</string>
+    <string name="bypass_error">Не удалось поднять VPN</string>
+    <string name="bypass_channel">Обход DPI</string>
+    <string name="bypass_notification">Обход DPI включён</string>
 </resources>

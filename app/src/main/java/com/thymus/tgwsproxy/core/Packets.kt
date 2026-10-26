@@ -8,6 +8,7 @@ package com.thymus.tgwsproxy.core
  * handled; IPv6 traffic simply stays outside the tunnel.
  */
 internal object Packets {
+    const val PROTO_ICMP = 1
     const val PROTO_TCP = 6
     const val PROTO_UDP = 17
 
@@ -18,6 +19,8 @@ internal object Packets {
     const val TCP_ACK = 0x10
 
     private var ipId = 1
+
+    val EMPTY = ByteArray(0)
 
     /** A parsed transport packet. Fields that do not apply are zero. */
     class Ip(
@@ -100,20 +103,28 @@ internal object Packets {
         flags: Int,
         window: Int,
         payload: ByteArray,
+        mss: Int = 0,
     ): ByteArray {
-        val total = 40 + payload.size
+        // A SYN-ACK without an MSS option makes the peer assume 536-byte segments.
+        val headerSize = if (mss > 0) 24 else 20
+        val total = 20 + headerSize + payload.size
         val packet = ByteArray(total)
         writeIpHeader(packet, total, PROTO_TCP, src, dst)
         put16(packet, 20, srcPort)
         put16(packet, 22, dstPort)
         put32(packet, 24, seq)
         put32(packet, 28, ack)
-        packet[32] = (5 shl 4).toByte()
+        packet[32] = ((headerSize / 4) shl 4).toByte()
         packet[33] = flags.toByte()
         put16(packet, 34, window)
-        payload.copyInto(packet, 40)
-        val pseudo = pseudoSum(src, dst, PROTO_TCP, 20 + payload.size)
-        put16(packet, 36, checksum(packet, 20, 20 + payload.size, pseudo))
+        if (mss > 0) {
+            packet[40] = 2 // kind: maximum segment size
+            packet[41] = 4
+            put16(packet, 42, mss)
+        }
+        payload.copyInto(packet, 20 + headerSize)
+        val pseudo = pseudoSum(src, dst, PROTO_TCP, headerSize + payload.size)
+        put16(packet, 36, checksum(packet, 20, headerSize + payload.size, pseudo))
         return packet
     }
 
@@ -133,6 +144,40 @@ internal object Packets {
         // A zero UDP checksum is legal for IPv4 and saves a pass over the payload.
         put16(packet, 26, 0)
         payload.copyInto(packet, 28)
+        return packet
+    }
+
+    /**
+     * ICMP "port unreachable" quoting the datagram that was dropped.
+     *
+     * Used for QUIC: a client that is told the port is closed gives up on UDP/443 at once
+     * instead of waiting for its own timeout, so the app falls back to TCP (where the
+     * handshake split works) much sooner.
+     */
+    fun icmpPortUnreachable(
+        remote: ByteArray,
+        local: ByteArray,
+        origSrc: ByteArray,
+        origDst: ByteArray,
+        origSrcPort: Int,
+        origDstPort: Int,
+        origPayloadLength: Int,
+    ): ByteArray {
+        val quote = ByteArray(28)
+        writeIpHeader(quote, 28 + origPayloadLength, PROTO_UDP, origSrc, origDst)
+        put16(quote, 20, origSrcPort)
+        put16(quote, 22, origDstPort)
+        put16(quote, 24, 8 + origPayloadLength)
+        put16(quote, 26, 0)
+
+        val icmpLength = 8 + quote.size
+        val total = 20 + icmpLength
+        val packet = ByteArray(total)
+        writeIpHeader(packet, total, PROTO_ICMP, remote, local)
+        packet[20] = 3 // destination unreachable
+        packet[21] = 3 // port unreachable
+        quote.copyInto(packet, 28)
+        put16(packet, 22, checksum(packet, 20, icmpLength, 0))
         return packet
     }
 

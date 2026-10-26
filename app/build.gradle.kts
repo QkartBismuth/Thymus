@@ -67,6 +67,10 @@ android {
             "META-INF/DEPENDENCIES",
         )
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 tasks.withType<Test>().configureEach {

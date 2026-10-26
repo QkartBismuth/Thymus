@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.Handler
 import android.os.Looper
@@ -23,6 +24,7 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -45,10 +47,18 @@ class BypassService : VpnService() {
         const val ACTION_STOP = "com.thymus.tgwsproxy.action.BYPASS_STOP"
         private const val IDLE_TIMEOUT_MS = 120_000L
         private const val UDP_TIMEOUT_MS = 60_000
+        private const val TELEGRAM_PACKAGE = "org.telegram.messenger"
+        private const val MAX_TCP_FLOWS = 256
+        private const val MAX_UDP_FLOWS = 256
 
         fun start(context: Context) {
             val intent = Intent(context, BypassService::class.java).setAction(ACTION_START)
-            context.startService(intent)
+            try {
+                context.startService(intent)
+            } catch (_: Throwable) {
+                Settings.setBypassEnabled(context, false)
+                BypassState.error.value = context.getString(R.string.bypass_error)
+            }
         }
 
         fun stop(context: Context) {
@@ -67,6 +77,7 @@ class BypassService : VpnService() {
 
     @Volatile private var running = false
     private var reader: Thread? = null
+    private var desync = true
 
     private val janitor = object : Runnable {
         override fun run() {
@@ -74,7 +85,7 @@ class BypassService : VpnService() {
             val now = SystemClock.elapsedRealtime()
             for (flow in flows.values) {
                 if (flow.isClosed || now - flow.lastActive > IDLE_TIMEOUT_MS) {
-                    flows.remove(flow.key)
+                    flows.remove(flow.key, flow)
                     flow.close()
                 }
             }
@@ -96,6 +107,7 @@ class BypassService : VpnService() {
             stopSelf()
             return START_NOT_STICKY
         }
+        desync = Settings.isBypassDesync(this)
         if (!running) startTunnel()
         return START_STICKY
     }
@@ -118,10 +130,20 @@ class BypassService : VpnService() {
             .setMtu(1500)
             .addAddress("10.111.222.1", 32)
             .addRoute("0.0.0.0", 0)
-            .addDnsServer("1.1.1.1")
-            .addDnsServer("8.8.8.8")
+        // Reuse the resolvers the phone already trusts. Forcing 1.1.1.1 breaks on networks
+        // where public DNS is blocked or redirected, which is exactly the case here.
+        val resolvers = upstreamDnsServers()
+        if (resolvers.isEmpty()) {
+            builder.addDnsServer("1.1.1.1")
+            builder.addDnsServer("8.8.8.8")
+        } else {
+            resolvers.forEach { builder.addDnsServer(it) }
+        }
         // Keep this app outside its own tunnel: the proxy and the relay sockets must not loop.
         runCatching { builder.addDisallowedApplication(packageName) }
+        // Telegram already reaches its DCs through the local MTProto proxy. Routing it
+        // through a userspace TCP relay as well would only slow it down.
+        runCatching { builder.addDisallowedApplication(TELEGRAM_PACKAGE) }
 
         val fd = try {
             builder.establish()
@@ -137,6 +159,7 @@ class BypassService : VpnService() {
 
         tunnel = fd
         output = FileOutputStream(fd.fileDescriptor)
+        desync = Settings.isBypassDesync(this)
         running = true
         startForeground(NOTIFICATION_ID, buildNotification())
         BypassState.running.value = true
@@ -147,6 +170,19 @@ class BypassService : VpnService() {
             start()
         }
         handler.postDelayed(janitor, 30_000)
+    }
+
+    /** IPv4 resolvers of the network underneath the tunnel. */
+    private fun upstreamDnsServers(): List<String> {
+        val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return emptyList()
+        val network = manager.activeNetwork ?: return emptyList()
+        val props = manager.getLinkProperties(network) ?: return emptyList()
+        return props.dnsServers
+            .filterIsInstance<Inet4Address>()
+            .mapNotNull { it.hostAddress }
+            .distinct()
+            .take(2)
     }
 
     private fun readLoop(fd: ParcelFileDescriptor) {
@@ -173,83 +209,141 @@ class BypassService : VpnService() {
         if (syn) {
             val existing = flows[key]
             if (existing != null && !existing.isClosed) return
+            if (flows.size >= MAX_TCP_FLOWS) evictOldestTcp()
             val relay = TcpRelay(
                 tun = TunSink { writePacket(it) },
                 first = packet,
-                desync = Settings.isBypassDesync(this),
-                onClosed = { closed -> flows.remove(closed.key) },
+                desync = desync,
+                onClosed = { closed -> flows.remove(closed.key, closed) },
             )
             relay.key = key
             flows[key] = relay
             relay.start(executor)
         } else {
-            flows[key]?.onPacket(packet)
+            val flow = flows[key]
+            if (flow == null) {
+                // Stale connection from before the tunnel started, or one already reaped:
+                // refuse it instead of letting the app wait for a timeout.
+                if (packet.flags and Packets.TCP_RST == 0) {
+                    writePacket(
+                        Packets.tcp(
+                            src = packet.dst,
+                            dst = packet.src,
+                            srcPort = packet.dstPort,
+                            dstPort = packet.srcPort,
+                            seq = packet.ack,
+                            ack = 0,
+                            flags = Packets.TCP_RST,
+                            window = 0,
+                            payload = Packets.EMPTY,
+                        ),
+                    )
+                }
+            } else {
+                flow.onPacket(packet)
+            }
         }
     }
 
     /**
      * QUIC is dropped on purpose: it is what YouTube uses by default, and a TCP
-     * connection can be desynced while QUIC cannot. Everything else keeps a small
-     * per-flow socket, which is enough for DNS and Discord voice.
+     * connection can be desynced while QUIC cannot. The client is told the port is
+     * closed so it moves to TCP immediately. Everything else keeps a small per-flow
+     * socket, which is enough for DNS and Discord voice.
      */
     private fun handleUdp(packet: Packets.Ip) {
-        if (packet.dstPort == 443) return
+        if (packet.dstPort == 443) {
+            writePacket(
+                Packets.icmpPortUnreachable(
+                    remote = packet.dst,
+                    local = packet.src,
+                    origSrc = packet.src,
+                    origDst = packet.dst,
+                    origSrcPort = packet.srcPort,
+                    origDstPort = packet.dstPort,
+                    origPayloadLength = packet.payload.size,
+                ),
+            )
+            return
+        }
         val key = keyOf(packet)
         val existing = udpFlows[key]
         if (existing != null) {
             existing.send(packet.payload)
             return
         }
+        if (udpFlows.size >= MAX_UDP_FLOWS) {
+            udpFlows.values.minByOrNull { it.lastActive }?.close()
+        }
         val relay = UdpRelay(key, packet)
-        udpFlows[key] = relay
-        relay.start()
-        relay.send(packet.payload)
+        if (relay.start()) {
+            udpFlows[key] = relay
+            relay.send(packet.payload)
+        }
     }
 
     private inner class UdpRelay(private val key: String, private val first: Packets.Ip) {
-        private val socket = DatagramSocket()
+        private var socket: DatagramSocket? = null
         @Volatile var lastActive = SystemClock.elapsedRealtime()
         @Volatile private var closed = false
 
-        fun start() {
-            socket.connect(InetAddress.getByAddress(first.dst), first.dstPort)
-            socket.soTimeout = UDP_TIMEOUT_MS
-            executor.execute {
-                val buffer = ByteArray(4096)
-                while (!closed) {
-                    try {
-                        val response = DatagramPacket(buffer, buffer.size)
-                        socket.receive(response)
-                        lastActive = SystemClock.elapsedRealtime()
-                        writePacket(
-                            Packets.udp(
-                                src = first.dst,
-                                dst = first.src,
-                                srcPort = first.dstPort,
-                                dstPort = first.srcPort,
-                                payload = response.data.copyOf(response.length),
-                            ),
-                        )
-                    } catch (_: java.net.SocketTimeoutException) {
-                        // Keep the flow for the next datagram.
-                    } catch (_: Throwable) {
-                        break
-                    }
+        /** Opens the socket on the caller thread so the very first datagram is not lost. */
+        fun start(): Boolean {
+            val created = try {
+                DatagramSocket().apply {
+                    connect(InetAddress.getByAddress(first.dst), first.dstPort)
+                    soTimeout = UDP_TIMEOUT_MS
                 }
+            } catch (_: Throwable) {
                 close()
+                return false
             }
+            if (closed) {
+                runCatching { created.close() }
+                return false
+            }
+            socket = created
+            executor.execute { receiveLoop(created) }
+            return true
+        }
+
+        private fun receiveLoop(socket: DatagramSocket) {
+            val buffer = ByteArray(4096)
+            while (!closed) {
+                try {
+                    val response = DatagramPacket(buffer, buffer.size)
+                    socket.receive(response)
+                    lastActive = SystemClock.elapsedRealtime()
+                    writePacket(
+                        Packets.udp(
+                            src = first.dst,
+                            dst = first.src,
+                            srcPort = first.dstPort,
+                            dstPort = first.srcPort,
+                            payload = response.data.copyOf(response.length),
+                        ),
+                    )
+                } catch (_: java.net.SocketTimeoutException) {
+                    // Keep the flow for the next datagram.
+                } catch (_: Throwable) {
+                    break
+                }
+            }
+            close()
         }
 
         fun send(payload: ByteArray) {
             lastActive = SystemClock.elapsedRealtime()
-            runCatching { socket.send(DatagramPacket(payload, payload.size)) }
+            val target = socket ?: return
+            runCatching { target.send(DatagramPacket(payload, payload.size)) }
         }
 
         fun close() {
             if (closed) return
             closed = true
-            runCatching { socket.close() }
-            udpFlows.remove(key)
+            runCatching { socket?.close() }
+            socket = null
+            udpFlows.remove(key, this)
         }
     }
 
@@ -263,6 +357,12 @@ class BypassService : VpnService() {
     private fun keyOf(packet: Packets.Ip): String =
         "${packet.srcPort}:${packet.dstPort}:${packet.src.contentHashCode()}:${packet.dst.contentHashCode()}"
 
+    private fun evictOldestTcp() {
+        val oldest = flows.values.minByOrNull { it.lastActive } ?: return
+        flows.remove(oldest.key, oldest)
+        oldest.close()
+    }
+
     private fun shutdown() {
         running = false
         handler.removeCallbacks(janitor)
@@ -270,6 +370,8 @@ class BypassService : VpnService() {
         reader = null
         for (flow in flows.values) flow.close()
         flows.clear()
+        for (flow in udpFlows.values) flow.close()
+        udpFlows.clear()
         runCatching { output?.close() }
         output = null
         runCatching { tunnel?.close() }

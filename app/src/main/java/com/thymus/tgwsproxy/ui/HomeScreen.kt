@@ -167,7 +167,11 @@ fun HomeScreen() {
 
     val bypassError by BypassState.error.collectAsStateWithLifecycle()
     LaunchedEffect(bypassError) {
-        bypassError?.let { snackbar.showSnackbar(it) }
+        bypassError?.let {
+            snackbar.showSnackbar(it)
+            bypassEnabled = Settings.isBypassEnabled(context)
+            BypassState.error.value = null
+        }
     }
 
     fun copy(text: String, label: String) {
@@ -231,6 +235,8 @@ fun HomeScreen() {
                     onBypassDesyncChange = {
                         bypassDesync = it
                         Settings.setBypassDesync(context, it)
+                        // New connections pick the setting up right away.
+                        if (bypassEnabled) BypassService.start(context)
                     },
                     port = portText,
                     onPortChange = { portText = it },

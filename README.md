@@ -1,5 +1,7 @@
 # Thymus
 
+[![Build APK](https://github.com/QkartBismuth/Thymus/actions/workflows/build.yml/badge.svg)](https://github.com/QkartBismuth/Thymus/actions/workflows/build.yml)
+
 Нативное Android-приложение: локальный MTProto-прокси,
 который гоняет трафик Telegram через WebSocket к серверам Telegram.
 
@@ -11,6 +13,8 @@ Telegram (на телефоне) → 127.0.0.1:1443 → WebSocket (TLS) → DC T
 - не нужен VPN, root и сторонние серверы;
 - трафик не выходит за пределы устройства иначе как в Telegram;
 - данные остаются в том же шифровании MTProto — прокси лишь меняет транспорт.
+
+**Скачать:** [последний APK](https://github.com/QkartBismuth/Thymus/releases/latest) · Android 8.0+
 
 ## Возможности
 
@@ -42,6 +46,8 @@ Telegram (на телефоне) → 127.0.0.1:1443 → WebSocket (TLS) → DC T
 - Экспериментальный обход DPI без root: локальный VPN, переупаковка TLS-рукопожатия
   внутри SNI, ретрансляция QUIC и выбор конфига, как в zapret. Не помогает против
   глубокой инспекции.
+- Автоподбор конфига обхода: проверяет каждый конфиг реальным TLS-рукопожатием с
+  YouTube и Discord и оставляет тот, что получил ответ.
 
 ## Оформление
 
@@ -58,9 +64,6 @@ Telegram (на телефоне) → 127.0.0.1:1443 → WebSocket (TLS) → DC T
 Шрифт — [Geologica](https://github.com/google/fonts/tree/main/ofl/geologica). Кегли по референсу:
 кнопка питания 32 sp, «Подключить» 17 sp, значения трафика 21 sp — все Bold.
 
-Скриншоты интерфейса: `docs/screens/home.png`, `docs/screens/home-dark.png`,
-`docs/screens/settings.png`, `docs/screens/settings-dark.png`.
-
 ## Сборка
 
 Требуется JDK 17+ и Android SDK (platform 35, build-tools 35).
@@ -73,8 +76,9 @@ echo "sdk.dir=/path/to/Android/Sdk" > local.properties
 # APK: app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Готовые APK уже собраны: `dist/Thymus-1.0.2.apk` (release, подписан debug-ключом)
-и `app/build/outputs/apk/debug/app-debug.apk`.
+Готовый APK — в [Releases](https://github.com/QkartBismuth/Thymus/releases/latest)
+(`v1.0.2`, release-сборка, подписана debug-ключом). CI также собирает APK на каждый
+push: workflow `Build APK`, артефакт `thymus-apk`.
 
 Проверка ядра на реальном DC Telegram (нужен доступ к Telegram):
 
@@ -124,12 +128,12 @@ keyPassword=...
 Как это устроено:
 
 - TCP-соединения завершаются внутри приложения и открываются заново обычным сокетом.
-- Первый TLS ClientHello переупаковывается в две TLS-записи. Разрез проходит не по
-  середине имени, а внутри самого заблокированного слова — как `midsld` в zapret:
-  `youtubei.googleapis.com` превращается в `yout` + `ubei.googleapis.com`, поэтому
-  ни один фрагмент не содержит целого слова. Между записями отправляется внеполосный
-  байт (`oob`): TCP-стек сервера его выбрасывает, а DPI, который пытается собрать
-  записи обратно, теряет рукопожатие.
+- Первый TLS ClientHello переупаковывается в две или несколько TLS-записей. Разрез
+  проходит не по середине имени, а внутри самого заблокированного слова — как `midsld`
+  в zapret: `youtubei.googleapis.com` превращается в `yout` + `ubei.googleapis.com`,
+  поэтому ни один фрагмент не содержит целого слова. Между записями отправляется
+  внеполосный байт (`oob`): TCP-стек сервера его выбрасывает, а DPI, который пытается
+  собрать записи обратно, теряет рукопожатие.
 - QUIC (UDP 443) не отбрасывается, а ретранслируется: SNI внутри QUIC зашифрован,
   поэтому фильтр по имени хоста его не видит. DNS и остальной UDP идут через тот же
   туннель, а DNS-серверы берутся у текущей сети — публичные 1.1.1.1 только как запасной
@@ -282,3 +286,7 @@ keyPassword=...
 Список CF-доменов обновляется с GitHub при запуске (если поле не переопределено вручную).
 
 Проект не связан с Telegram. Используйте на свой риск и в рамках закона.
+
+## Лицензия
+
+MIT. См. [LICENSE](LICENSE).

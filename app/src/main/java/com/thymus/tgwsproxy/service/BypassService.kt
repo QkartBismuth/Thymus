@@ -66,7 +66,14 @@ class BypassService : VpnService() {
         }
 
         fun stop(context: Context) {
-            context.stopService(Intent(context, BypassService::class.java))
+            // A VpnService is bound by the system, so stopService() alone can leave the
+            // tunnel up. ACTION_STOP runs shutdown() and stopSelf() inside the service.
+            val intent = Intent(context, BypassService::class.java).setAction(ACTION_STOP)
+            try {
+                context.startService(intent)
+            } catch (_: Throwable) {
+                context.stopService(Intent(context, BypassService::class.java))
+            }
         }
     }
 
@@ -108,6 +115,11 @@ class BypassService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             shutdown()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        // A sticky restart must not resurrect a tunnel the user has switched off.
+        if (!Settings.isBypassEnabled(this)) {
             stopSelf()
             return START_NOT_STICKY
         }

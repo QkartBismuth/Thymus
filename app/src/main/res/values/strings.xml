@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Thymus</string>
+
+    <string name="status_running">Proxy is running</string>
+    <string name="status_stopped">Proxy is off</string>
+    <string name="status_starting">Starting…</string>
+    <string name="status_error">Error: %1$s</string>
+
+    <string name="action_start">Turn on</string>
+    <string name="action_stop">Turn off</string>
+    <string name="action_settings">Settings</string>
+    <string name="action_connect_telegram">Connect</string>
+    <string name="connect_first">Turn the proxy on first — Telegram can only use a running proxy.</string>
+    <string name="action_open_telegram">Open in Telegram</string>
+    <string name="action_copy_link">Copy link</string>
+    <string name="action_copy_secret">Copy secret</string>
+    <string name="action_battery">Disable battery optimization</string>
+    <string name="copied">Copied</string>
+
+    <string name="section_proxy">Proxy</string>
+    <string name="section_routes">Routes</string>
+    <string name="section_system">System</string>
+    <string name="section_theme">Theme</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_dark">Dark</string>
+    <string name="section_connect">Connect in Telegram</string>
+    <string name="connect_hint">Tap “Open in Telegram” and accept the proxy. Or add it manually: Settings → Data and Storage → Proxy.</string>
+    <string name="manual_server">Server</string>
+    <string name="manual_port">Port</string>
+    <string name="manual_secret">Secret</string>
+
+    <string name="section_stats">Statistics</string>
+    <string name="stats_connections">Connections</string>
+    <string name="stats_traffic">Traffic</string>
+    <string name="stats_route">Route</string>
+
+    <string name="section_settings">Settings</string>
+    <string name="setting_port">Port</string>
+    <string name="setting_secret">Secret (32 hex)</string>
+    <string name="setting_dc_map">DC → IP (empty means Cloudflare/TCP only)</string>
+    <string name="setting_domains">Fallback CF domains (comma separated)</string>
+    <string name="setting_cf_fallback">Cloudflare fallback</string>
+    <string name="setting_tcp_fallback">Direct TCP fallback</string>
+    <string name="setting_autostart">Start when app opens</string>
+    <string name="action_regenerate">New secret</string>
+    <string name="action_save">Save</string>
+    <string name="action_open_telegram_app">Open Telegram</string>
+    <string name="telegram_not_found">Telegram is not installed</string>
+    <string name="secret_mismatch_title">Telegram is using an old secret</string>
+    <string name="secret_mismatch_body">One of the 127.0.0.1:1443 entries in Telegram still has an old secret. Delete it in Settings → Data and Storage → Proxy and keep a single entry.</string>
+    <string name="settings_saved">Saved</string>
+    <string name="settings_readd">Saved. Secret or port changed — add the proxy in Telegram again</string>
+    <string name="settings_invalid">Check the port and the secret</string>
+
+    <string name="section_log">Log</string>
+    <string name="action_diagnose">Check routes</string>
+    <string name="action_copy_log">Copy log</string>
+    <string name="action_expand_log">Show all</string>
+    <string name="action_collapse_log">Collapse</string>
+    <string name="log_empty">Empty for now</string>
+
+    <string name="notif_channel">Proxy</string>
+    <string name="notif_title">Thymus</string>
+    <string name="notif_text">127.0.0.1:%1$d · %2$d conn.</string>
+    <string name="notif_stop">Stop</string>
+
+    <string name="battery_hint">Allow the app to run without battery optimization so Android does not kill the proxy in background.</string>
+    <string name="battery_prompt_title">Background work</string>
+    <string name="battery_prompt_body">Android may kill the proxy while the screen is off. Allow the app to run without battery optimization so the proxy keeps running.</string>
+    <string name="action_allow">Allow</string>
+    <string name="action_later">Later</string>
+</resources>

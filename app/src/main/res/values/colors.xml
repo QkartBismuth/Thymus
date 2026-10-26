@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Botanical palette from the design reference. -->
+    <color name="app_background">#B99AEF</color>
+    <color name="ic_launcher_background">#D8BBF3</color>
+</resources>

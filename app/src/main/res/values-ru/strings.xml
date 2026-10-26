@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Thymus</string>
+
+    <string name="status_running">Прокси работает</string>
+    <string name="status_stopped">Прокси выключен</string>
+    <string name="status_starting">Запуск…</string>
+    <string name="status_error">Ошибка: %1$s</string>
+
+    <string name="action_start">Включить</string>
+    <string name="action_stop">Выключить</string>
+    <string name="action_settings">Настройки</string>
+    <string name="action_connect_telegram">Подключить</string>
+    <string name="connect_first">Сначала включите прокси — Telegram подключается только к работающему.</string>
+    <string name="action_open_telegram">Открыть в Telegram</string>
+    <string name="action_copy_link">Копировать ссылку</string>
+    <string name="action_copy_secret">Копировать секрет</string>
+    <string name="action_battery">Отключить оптимизацию батареи</string>
+    <string name="copied">Скопировано</string>
+
+    <string name="section_proxy">Прокси</string>
+    <string name="section_routes">Маршруты</string>
+    <string name="section_system">Система</string>
+    <string name="section_theme">Тема</string>
+    <string name="theme_light">Светлая</string>
+    <string name="theme_dark">Тёмная</string>
+    <string name="section_connect">Подключение в Telegram</string>
+    <string name="connect_hint">Нажмите «Открыть в Telegram» — приложение предложит добавить прокси. Либо добавьте вручную: Настройки → Данные и память → Прокси.</string>
+    <string name="manual_server">Сервер</string>
+    <string name="manual_port">Порт</string>
+    <string name="manual_secret">Секрет</string>
+
+    <string name="section_stats">Статистика</string>
+    <string name="stats_connections">Соединения</string>
+    <string name="stats_traffic">Трафик</string>
+    <string name="stats_route">Маршрут</string>
+
+    <string name="section_settings">Настройки</string>
+    <string name="setting_port">Порт</string>
+    <string name="setting_secret">Секрет (32 hex)</string>
+    <string name="setting_dc_map">DC → IP (пусто — только Cloudflare/TCP)</string>
+    <string name="setting_domains">CF-домены для обхода (через запятую)</string>
+    <string name="setting_cf_fallback">Резерв через Cloudflare</string>
+    <string name="setting_tcp_fallback">Прямой TCP-резерв</string>
+    <string name="setting_autostart">Запускать при открытии</string>
+    <string name="action_regenerate">Новый секрет</string>
+    <string name="action_save">Сохранить</string>
+    <string name="action_open_telegram_app">Открыть Telegram</string>
+    <string name="telegram_not_found">Telegram не найден на устройстве</string>
+    <string name="secret_mismatch_title">Telegram использует старый секрет</string>
+    <string name="secret_mismatch_body">Одна из записей 127.0.0.1:1443 в Telegram сохранена со старым секретом. Удалите её в Настройки → Данные и память → Прокси и оставьте одну запись.</string>
+    <string name="settings_saved">Сохранено</string>
+    <string name="settings_readd">Сохранено. Секрет или порт изменились — добавьте прокси в Telegram заново</string>
+    <string name="settings_invalid">Проверьте порт и секрет</string>
+
+    <string name="section_log">Лог</string>
+    <string name="action_diagnose">Проверить маршруты</string>
+    <string name="action_copy_log">Скопировать лог</string>
+    <string name="action_expand_log">Показать всё</string>
+    <string name="action_collapse_log">Свернуть</string>
+    <string name="log_empty">Пока пусто</string>
+
+    <string name="notif_channel">Прокси</string>
+    <string name="notif_title">Thymus</string>
+    <string name="notif_text">127.0.0.1:%1$d · %2$d соед.</string>
+    <string name="notif_stop">Стоп</string>
+
+    <string name="battery_hint">Чтобы система не выгружала прокси в фоне, разрешите работу без оптимизации батареи.</string>
+    <string name="battery_prompt_title">Работа в фоне</string>
+    <string name="battery_prompt_body">Android может выгрузить прокси из памяти, когда экран выключен. Разрешите приложению работу без оптимизации батареи — тогда прокси останется запущенным.</string>
+    <string name="action_allow">Разрешить</string>
+    <string name="action_later">Позже</string>
+</resources>
